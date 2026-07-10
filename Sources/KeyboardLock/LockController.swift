@@ -3,10 +3,11 @@ import Cocoa
 
 /// Owns the CGEventTap and the locked/unlocked state machine.
 ///
-/// The tap only watches keyboard event types (keyDown/keyUp/flagsChanged) —
-/// mouse/trackpad events are never part of its mask, so they always pass
-/// through untouched. That's what lets the user unlock via a menu bar click
-/// even while the keyboard itself is fully suppressed.
+/// The tap only watches keyboard event types (keyDown/keyUp/flagsChanged,
+/// plus the undocumented "system defined" type used for the media/brightness/
+/// function-key row) — mouse/trackpad events are never part of its mask, so
+/// they always pass through untouched. That's what lets the user unlock via
+/// a menu bar click even while the keyboard itself is fully suppressed.
 final class LockController {
     static let shared = LockController()
 
@@ -31,7 +32,13 @@ final class LockController {
     func start() -> Bool {
         guard eventTap == nil else { return true }
 
-        let eventTypes: [CGEventType] = [.keyDown, .keyUp, .flagsChanged]
+        // Media/brightness/volume and most function-row keys (when not set
+        // to act as literal F-keys) don't arrive as keyDown at all — macOS
+        // delivers them as "system defined" events (NX_SYSDEFINED, raw type
+        // 14). There's no public CGEventType case for it, but it's a stable,
+        // widely-used raw value (the same trick Karabiner/Hammerspoon use).
+        let systemDefinedType = CGEventType(rawValue: 14)!
+        let eventTypes: [CGEventType] = [.keyDown, .keyUp, .flagsChanged, systemDefinedType]
         var mask: CGEventMask = 0
         for eventType in eventTypes {
             let bit: CGEventMask = 1 << eventType.rawValue
