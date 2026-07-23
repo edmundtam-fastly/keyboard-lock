@@ -21,12 +21,45 @@ final class LockController {
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var config: AppConfig = ConfigStore.load()
 
     // Control+Option+Command+L, used only to trigger the lock.
     private let hotkeyFlags: CGEventFlags = [.maskControl, .maskAlternate, .maskCommand]
     private let hotkeyKeyCode = Int64(kVK_ANSI_L)
 
+    // ── Auto-lock detection ──────────────────────────────────────────────
+    // Real-cat QA showed a cat's signature is less about raw speed and more
+    // about *concurrency*: a paw/body presses several keys at once and holds
+    // them, where human typing releases each key almost immediately (2–3
+    // keys overlapping at most, even with fast rollover). Three independent
+    // triggers, any one of which locks:
+    //
+    // 1. Paw-landing: ≥4 non-modifier keys physically held down at once.
+    // 2. Cat-sitting: ≥2 keys held down concurrently for ≥1.5s. (One held
+    //    key is normal human behavior — arrows, backspace — two+ isn't.)
+    //    Evaluated when autorepeat events arrive, so a silent keyboard with
+    //    keys pinned still gets caught as soon as repeat kicks in.
+    // 3. Violent mash: ≥8 keyDowns within 0.3s spanning ≥5 distinct keys
+    //    (~320 WPM instantaneous — raised from v1's ~180 after fast typing
+    //    at 80–100 WPM false-triggered the old 6-in-0.4s threshold).
+    private static let concurrentHeldThreshold = 4
+    private static let sustainedHeldCount = 2
+    private static let sustainedHeldDuration: TimeInterval = 1.5
+    private static let burstWindow: TimeInterval = 0.3
+    private static let burstKeyCount = 8
+    private static let burstDistinctKeys = 5
+    // Safety valve: a keyUp we never saw (tap briefly disabled) would leave
+    // a phantom "held" key forever; drop entries older than this.
+    private static let heldStaleLimit: TimeInterval = 300
+
+    private var recentKeyDowns: [(time: TimeInterval, keyCode: Int64)] = []
+    private var heldKeys: [Int64: TimeInterval] = [:]  // keyCode → time pressed
+
     private init() {}
+
+    func reloadConfig() {
+        config = ConfigStore.load()
+    }
 
     @discardableResult
     func start() -> Bool {
@@ -86,12 +119,19 @@ final class LockController {
 
     func lock() {
         guard !isLocked else { return }
+        resetDetector()
         isLocked = true
     }
 
     func unlock() {
         guard isLocked else { return }
+        resetDetector()
         isLocked = false
+    }
+
+    private func resetDetector() {
+        recentKeyDowns.removeAll()
+        heldKeys.removeAll()
     }
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -111,10 +151,62 @@ final class LockController {
                 lock()
                 return nil
             }
+            if config.autoLockOnBurst, catDetected(type: type, event: event) {
+                lock()
+                // Swallow the triggering keystroke too — the first few of a
+                // cat-mash inevitably leak before the threshold trips, but
+                // there's no reason to deliver this one.
+                return nil
+            }
             return Unmanaged.passUnretained(event)
         }
 
         return nil
+    }
+
+    /// Feeds one keyboard event into the detector state and reports whether
+    /// any of the three cat signatures (paw-landing, cat-sitting, violent
+    /// mash) is now present. Modifier keys never appear here — they arrive
+    /// as flagsChanged, not keyDown/keyUp — so held-key counts are already
+    /// modifier-free (holding ⇧ while arrow-selecting can't contribute).
+    private func catDetected(type: CGEventType, event: CGEvent) -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+
+        switch type {
+        case .keyDown:
+            // Autorepeat isn't a new press — don't re-add it to the burst
+            // window or refresh the held timestamp — but it IS the clock
+            // tick that lets the sustained-hold check below fire while keys
+            // sit pinned under a cat.
+            if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                heldKeys[keyCode] = now
+                recentKeyDowns.append((time: now, keyCode: keyCode))
+            }
+        case .keyUp:
+            heldKeys.removeValue(forKey: keyCode)
+            return false // a key release is never evidence of a cat
+        default:
+            return false // flagsChanged / system-defined don't feed detection
+        }
+
+        recentKeyDowns.removeAll { now - $0.time > Self.burstWindow }
+        heldKeys = heldKeys.filter { now - $0.value < Self.heldStaleLimit }
+
+        // 1. Paw-landing: several keys physically down right now.
+        if heldKeys.count >= Self.concurrentHeldThreshold { return true }
+
+        // 2. Cat-sitting: multiple keys pinned for a sustained stretch.
+        let sustained = heldKeys.values.filter { now - $0 >= Self.sustainedHeldDuration }
+        if sustained.count >= Self.sustainedHeldCount { return true }
+
+        // 3. Violent mash: rate + diversity beyond human typing.
+        if recentKeyDowns.count >= Self.burstKeyCount,
+           Set(recentKeyDowns.map(\.keyCode)).count >= Self.burstDistinctKeys {
+            return true
+        }
+
+        return false
     }
 
     private func matchesHotkey(event: CGEvent) -> Bool {

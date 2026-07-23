@@ -2,8 +2,24 @@ import Foundation
 
 struct AppConfig: Codable {
     var launchAtLogin: Bool
+    var autoLockOnBurst: Bool
 
-    static let `default` = AppConfig(launchAtLogin: false)
+    static let `default` = AppConfig(launchAtLogin: false, autoLockOnBurst: false)
+
+    init(launchAtLogin: Bool, autoLockOnBurst: Bool) {
+        self.launchAtLogin = launchAtLogin
+        self.autoLockOnBurst = autoLockOnBurst
+    }
+
+    // Tolerate configs written by older versions that lack newer keys —
+    // otherwise adding a field would silently reset every existing setting
+    // to defaults (ConfigStore.load() falls back to .default on any decode
+    // failure).
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
+        autoLockOnBurst = try container.decodeIfPresent(Bool.self, forKey: .autoLockOnBurst) ?? false
+    }
 }
 
 enum ConfigStore {

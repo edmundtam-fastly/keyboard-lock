@@ -33,6 +33,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(toggleItem)
         menu.addItem(.separator())
 
+        let autoLockItem = NSMenuItem(title: "Auto-Lock on Key Burst", action: #selector(toggleAutoLock), keyEquivalent: "")
+        autoLockItem.target = self
+        autoLockItem.state = ConfigStore.load().autoLockOnBurst ? .on : .off
+        menu.addItem(autoLockItem)
+
         let launchItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         launchItem.target = self
         launchItem.state = ConfigStore.load().launchAtLogin ? .on : .off
@@ -60,6 +65,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         controller.lock()
+    }
+
+    @objc private func toggleAutoLock(_ sender: NSMenuItem) {
+        var config = ConfigStore.load()
+        config.autoLockOnBurst.toggle()
+        ConfigStore.save(config)
+        sender.state = config.autoLockOnBurst ? .on : .off
+        controller.reloadConfig()
     }
 
     @objc private func toggleLaunchAtLogin(_ sender: NSMenuItem) {

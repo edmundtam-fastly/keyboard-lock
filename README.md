@@ -7,8 +7,8 @@ untouched; only the keyboard is suppressed until you unlock from the menu
 bar. The trackpad/mouse stay fully functional the whole time, so unlocking
 is just a click.
 
-Not a security tool — see PRD non-goals. Anyone with physical access can
-still reboot the Mac to regain control.
+Not a security tool — see [PRD.md](PRD.md) non-goals. Anyone with physical
+access can still reboot the Mac to regain control.
 
 ## Build
 
@@ -43,11 +43,30 @@ After granting, quit and relaunch the app once.
 - **Unlock**: click the menu bar lock icon → "Unlock Keyboard". The trackpad
   and mouse are never blocked, so this always works even while the keyboard
   is fully locked.
+- **Auto-Lock on Key Burst** (off by default): menu bar icon →
+  "Auto-Lock on Key Burst". When enabled, input that looks like a cat locks
+  the keyboard automatically, for the times the cat gets there before you
+  do. Three signatures trigger it, any one alone:
+  - **Paw landing** — 4+ keys physically held down at the same moment
+  - **Cat sitting** — 2+ keys held down together for 1.5s or more
+  - **Violent mash** — 8+ keystrokes within 0.3s across 5+ distinct keys
+    (~320 WPM; normal fast typing tops out far below this)
+
+  A single held key (backspace, arrows) never triggers it, and modifier
+  keys (Shift/Ctrl/Option/Cmd) never count toward held-key totals. The
+  first few keystrokes of a cat event necessarily reach apps before a
+  threshold trips; detection can't precede evidence.
 - **Launch at login**: menu bar icon → "Launch at Login" (off by default).
 
 While locked, a banner appears near the top of the screen reading "Keyboard
 Locked — Unlock in menu dropdown", and the menu bar icon switches to a
 filled lock.
+
+If auto-lock ever false-triggers during normal typing (or misses your cat),
+the thresholds live at the top of
+`Sources/KeyboardLock/LockController.swift` (`concurrentHeldThreshold`,
+`sustainedHeldCount`/`sustainedHeldDuration`, and the `burst*` constants) —
+tune and rebuild.
 
 ## Design note: why unlock is menu-only, not a typed code
 
