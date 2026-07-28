@@ -104,6 +104,7 @@ does not trigger.
 - Cat holds down keys (auto-repeat): suppressed while locked; while unlocked, repeats aren't counted as new presses but do drive the cat-sitting duration check
 - Fast human typing burst (validated to ~100 WPM real-world): must not false-trigger auto-lock — concurrency triggers require physically overlapping held keys that typing doesn't produce, and the rate backstop sits at ~320 WPM instantaneous
 - Human holding one key (backspace, arrows, gaming): a single held key never triggers; two-plus held keys for 1.5s does
+- Key already down when the lock engages (common with auto-lock — the leaked pre-threshold keyDowns): its keyUp is allowed through once so the frontmost app doesn't perceive a stuck held key (macOS accent-picker popup, post-unlock input weirdness); a bare keyUp types nothing, so suppression isn't weakened. Modifier keys held at lock time (flagsChanged) are not covered — deferred until observed in practice
 - App killed/crashed while locked: event tap dies with the process, input restored automatically
 - System-reserved shortcuts (⌘Tab, Spotlight, Mission Control): intercepted by macOS above any third-party tap; cannot be blocked (documented limitation)
 - Caps Lock LED may be toggled by the hardware controller before the tap sees the event; no character leaks either way

@@ -55,6 +55,14 @@ final class LockController {
     private var recentKeyDowns: [(time: TimeInterval, keyCode: Int64)] = []
     private var heldKeys: [Int64: TimeInterval] = [:]  // keyCode → time pressed
 
+    // Keys physically down at the moment the lock engaged. Their keyDowns
+    // already reached apps, so their keyUps must be allowed through too —
+    // suppressing them leaves the frontmost app believing a key is still
+    // held (stuck autorepeat, the accent-picker popup, post-unlock input
+    // weirdness). A bare keyUp can't type anything, so passing these
+    // specific releases doesn't weaken the lock.
+    private var pendingReleaseKeys: Set<Int64> = []
+
     private init() {}
 
     func reloadConfig() {
@@ -119,12 +127,16 @@ final class LockController {
 
     func lock() {
         guard !isLocked else { return }
+        // Snapshot before the detector reset wipes heldKeys: these are the
+        // keys whose downs already leaked and whose releases must follow.
+        pendingReleaseKeys = Set(heldKeys.keys)
         resetDetector()
         isLocked = true
     }
 
     func unlock() {
         guard isLocked else { return }
+        pendingReleaseKeys.removeAll()
         resetDetector()
         isLocked = false
     }
@@ -151,6 +163,10 @@ final class LockController {
                 lock()
                 return nil
             }
+            // Held-key bookkeeping runs regardless of the auto-lock setting:
+            // any lock (manual hotkey/menu included) needs to know which
+            // keys are physically down so their releases can pass through.
+            trackHeldKeys(type: type, event: event)
             if config.autoLockOnBurst, catDetected(type: type, event: event) {
                 lock()
                 // Swallow the triggering keystroke too — the first few of a
@@ -161,33 +177,47 @@ final class LockController {
             return Unmanaged.passUnretained(event)
         }
 
+        // Locked: everything is suppressed except the release of a key that
+        // was already down (and delivered) when the lock engaged.
+        if type == .keyUp,
+           pendingReleaseKeys.remove(event.getIntegerValueField(.keyboardEventKeycode)) != nil {
+            return Unmanaged.passUnretained(event)
+        }
         return nil
     }
 
-    /// Feeds one keyboard event into the detector state and reports whether
-    /// any of the three cat signatures (paw-landing, cat-sitting, violent
-    /// mash) is now present. Modifier keys never appear here — they arrive
-    /// as flagsChanged, not keyDown/keyUp — so held-key counts are already
-    /// modifier-free (holding ⇧ while arrow-selecting can't contribute).
-    private func catDetected(type: CGEventType, event: CGEvent) -> Bool {
-        let now = ProcessInfo.processInfo.systemUptime
+    /// Maintains the map of physically-held keys from keyDown/keyUp pairs.
+    /// Modifier keys never appear here — they arrive as flagsChanged, not
+    /// keyDown/keyUp — so held-key counts are already modifier-free
+    /// (holding ⇧ while arrow-selecting can't contribute).
+    private func trackHeldKeys(type: CGEventType, event: CGEvent) {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-
         switch type {
         case .keyDown:
-            // Autorepeat isn't a new press — don't re-add it to the burst
-            // window or refresh the held timestamp — but it IS the clock
-            // tick that lets the sustained-hold check below fire while keys
-            // sit pinned under a cat.
+            // Autorepeat isn't a new press — don't refresh the held
+            // timestamp, or the sustained-hold clock would never advance.
             if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
-                heldKeys[keyCode] = now
-                recentKeyDowns.append((time: now, keyCode: keyCode))
+                heldKeys[keyCode] = ProcessInfo.processInfo.systemUptime
             }
         case .keyUp:
             heldKeys.removeValue(forKey: keyCode)
-            return false // a key release is never evidence of a cat
         default:
-            return false // flagsChanged / system-defined don't feed detection
+            break
+        }
+    }
+
+    /// Feeds one keyboard event into the burst window and reports whether
+    /// any of the three cat signatures (paw-landing, cat-sitting, violent
+    /// mash) is now present. Held-key state is maintained separately by
+    /// trackHeldKeys; autorepeat keyDowns contribute no new state but act
+    /// as the clock tick that lets the sustained-hold check fire while keys
+    /// sit pinned under a cat.
+    private func catDetected(type: CGEventType, event: CGEvent) -> Bool {
+        guard type == .keyDown else { return false }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+            recentKeyDowns.append((time: now, keyCode: event.getIntegerValueField(.keyboardEventKeycode)))
         }
 
         recentKeyDowns.removeAll { now - $0.time > Self.burstWindow }

@@ -7,6 +7,7 @@ APP_NAME="KeyboardLock"
 BUNDLE_ID="com.edmundtam.keyboardlock"
 BUILD_CONFIG="release"
 SIGNING_IDENTITY="KeyboardLock Local Dev"
+VERSION="1.1.1"
 
 swift build -c "${BUILD_CONFIG}"
 
@@ -33,9 +34,9 @@ cat > "${CONTENTS}/Info.plist" <<PLIST
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>${VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${VERSION}</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>
