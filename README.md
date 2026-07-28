@@ -10,23 +10,49 @@ is just a click.
 Not a security tool — see [PRD.md](PRD.md) non-goals. Anyone with physical
 access can still reboot the Mac to regain control.
 
-## Build
+## Install from a GitHub release (most users)
+
+Grab `KeyboardLock.zip` from the latest
+[release](https://github.com/edmundtam-fastly/keyboard-lock/releases),
+unzip it, and move `KeyboardLock.app` to `/Applications`.
+
+### Getting past Gatekeeper (first launch only)
+
+Because the app isn't notarized by Apple, macOS blocks the first launch of
+a downloaded copy. This is a one-time step per download — easy to forget by
+the time you install an update, so it's spelled out here:
+
+1. Double-click the app once — it gets blocked and shows a dialog. Close it.
+2. Go to **System Settings → Privacy & Security**, scroll down — there's a
+   line like *"KeyboardLock" was blocked to protect your Mac* with an
+   **Open Anyway** button. Click it and authenticate.
+3. Double-click the app again — a second confirmation dialog appears,
+   click **Open**.
+
+Alternatively, skip all three steps with one Terminal command, which
+removes the downloaded-from-the-internet quarantine flag directly:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/KeyboardLock.app
+```
+
+Then continue with "First run: grant permissions" below.
+
+## Build from source
 
 ```sh
 ./Scripts/build_app.sh
 ```
 
 This compiles a release binary and packages it into `build/KeyboardLock.app`
-(ad-hoc code-signed, so macOS TCC permission grants persist across rebuilds
-as long as the bundle identifier doesn't change).
+(locally code-signed, so macOS TCC permission grants persist across rebuilds
+as long as the bundle identifier doesn't change). Locally built copies have
+no quarantine flag, so the Gatekeeper section above doesn't apply.
 
 ## First run: grant permissions
 
-```sh
-open build/KeyboardLock.app
-```
-
-On first launch macOS will prompt for **Accessibility**. You also need to
+Launch the app (from `/Applications`, or `open build/KeyboardLock.app` if
+you built from source). On first launch macOS will prompt for **Accessibility**. You also need to
 grant **Input Monitoring** manually — the app's menu offers a shortcut to
 both panes (via the "Permissions Required" alert if the tap fails to start,
 or open them directly):
