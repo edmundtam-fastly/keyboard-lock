@@ -7,7 +7,7 @@ APP_NAME="KeyboardLock"
 BUNDLE_ID="com.edmundtam.keyboardlock"
 BUILD_CONFIG="release"
 SIGNING_IDENTITY="KeyboardLock Local Dev"
-VERSION="1.1.1"
+VERSION="1.1.2"
 
 swift build -c "${BUILD_CONFIG}"
 

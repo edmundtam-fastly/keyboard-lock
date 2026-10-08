@@ -27,31 +27,9 @@ final class LockController {
     private let hotkeyFlags: CGEventFlags = [.maskControl, .maskAlternate, .maskCommand]
     private let hotkeyKeyCode = Int64(kVK_ANSI_L)
 
-    // ── Auto-lock detection ──────────────────────────────────────────────
-    // Real-cat QA showed a cat's signature is less about raw speed and more
-    // about *concurrency*: a paw/body presses several keys at once and holds
-    // them, where human typing releases each key almost immediately (2–3
-    // keys overlapping at most, even with fast rollover). Three independent
-    // triggers, any one of which locks:
-    //
-    // 1. Paw-landing: ≥4 non-modifier keys physically held down at once.
-    // 2. Cat-sitting: ≥2 keys held down concurrently for ≥1.5s. (One held
-    //    key is normal human behavior — arrows, backspace — two+ isn't.)
-    //    Evaluated when autorepeat events arrive, so a silent keyboard with
-    //    keys pinned still gets caught as soon as repeat kicks in.
-    // 3. Violent mash: ≥8 keyDowns within 0.3s spanning ≥5 distinct keys
-    //    (~320 WPM instantaneous — raised from v1's ~180 after fast typing
-    //    at 80–100 WPM false-triggered the old 6-in-0.4s threshold).
-    private static let concurrentHeldThreshold = 4
-    private static let sustainedHeldCount = 2
-    private static let sustainedHeldDuration: TimeInterval = 1.5
-    private static let burstWindow: TimeInterval = 0.3
-    private static let burstKeyCount = 8
-    private static let burstDistinctKeys = 5
-    // Safety valve: a keyUp we never saw (tap briefly disabled) would leave
-    // a phantom "held" key forever; drop entries older than this.
-    private static let heldStaleLimit: TimeInterval = 300
-
+    // Auto-lock detection thresholds and decision rules live in LockLogic
+    // (pure and unit-tested); this class only maintains the event-driven
+    // state they evaluate.
     private var recentKeyDowns: [(time: TimeInterval, keyCode: Int64)] = []
     private var heldKeys: [Int64: TimeInterval] = [:]  // keyCode → time pressed
 
@@ -62,6 +40,13 @@ final class LockController {
     // weirdness). A bare keyUp can't type anything, so passing these
     // specific releases doesn't weaken the lock.
     private var pendingReleaseKeys: Set<Int64> = []
+
+    // Same idea for modifier keys, which arrive as flagsChanged instead of
+    // keyDown/keyUp: tracked modifiers physically held when the lock
+    // engaged. Their releases drain through (per LockLogic's decision rule)
+    // so a leaked Fn/Globe or the lock hotkey's own ⌃⌥⌘ can't stay stuck —
+    // a stuck Fn turns "e" into the emoji picker after unlocking.
+    private var pendingReleaseFlags: CGEventFlags = []
 
     private init() {}
 
@@ -130,6 +115,14 @@ final class LockController {
         // Snapshot before the detector reset wipes heldKeys: these are the
         // keys whose downs already leaked and whose releases must follow.
         pendingReleaseKeys = Set(heldKeys.keys)
+        // Modifiers don't go through keyDown/keyUp, so read their physical
+        // state straight from the HID system: whatever is held right now
+        // was already delivered as a press and needs its release drained.
+        pendingReleaseFlags = CGEventSource.flagsState(.hidSystemState)
+            .intersection(LockLogic.trackedModifierFlags)
+        if !pendingReleaseFlags.isEmpty {
+            NSLog("KeyboardLock: locked with %d modifier flag(s) held; their releases will pass through", pendingReleaseFlags.rawValue.nonzeroBitCount)
+        }
         resetDetector()
         isLocked = true
     }
@@ -137,6 +130,7 @@ final class LockController {
     func unlock() {
         guard isLocked else { return }
         pendingReleaseKeys.removeAll()
+        pendingReleaseFlags = []
         resetDetector()
         isLocked = false
     }
@@ -167,7 +161,10 @@ final class LockController {
             // any lock (manual hotkey/menu included) needs to know which
             // keys are physically down so their releases can pass through.
             trackHeldKeys(type: type, event: event)
-            if config.autoLockOnBurst, catDetected(type: type, event: event) {
+            if config.autoLockOnBurst, let trigger = catDetected(type: type, event: event) {
+                // Rule name + counts only — never key identities — so false
+                // positives can be diagnosed from Console/log show.
+                NSLog("KeyboardLock: auto-lock fired — %@", trigger)
                 lock()
                 // Swallow the triggering keystroke too — the first few of a
                 // cat-mash inevitably leak before the threshold trips, but
@@ -177,11 +174,22 @@ final class LockController {
             return Unmanaged.passUnretained(event)
         }
 
-        // Locked: everything is suppressed except the release of a key that
-        // was already down (and delivered) when the lock engaged.
-        if type == .keyUp,
-           pendingReleaseKeys.remove(event.getIntegerValueField(.keyboardEventKeycode)) != nil {
-            return Unmanaged.passUnretained(event)
+        // Locked: everything is suppressed except events that *close out*
+        // state apps already saw — the release of a key or modifier that was
+        // down (and delivered) when the lock engaged. Releases type nothing,
+        // so the lock isn't weakened.
+        switch type {
+        case .keyUp:
+            if pendingReleaseKeys.remove(event.getIntegerValueField(.keyboardEventKeycode)) != nil {
+                return Unmanaged.passUnretained(event)
+            }
+        case .flagsChanged:
+            if let shrunk = LockLogic.modifierReleaseDecision(eventFlags: event.flags, pending: pendingReleaseFlags) {
+                pendingReleaseFlags = shrunk
+                return Unmanaged.passUnretained(event)
+            }
+        default:
+            break
         }
         return nil
     }
@@ -204,39 +212,28 @@ final class LockController {
         default:
             break
         }
+        // Prune phantoms (missed keyUps) unconditionally, not just when the
+        // auto-lock detector runs — they'd otherwise inflate concurrency
+        // counts and pollute the pendingReleaseKeys snapshot at lock time.
+        heldKeys = LockLogic.pruneHeldKeys(heldKeys, now: ProcessInfo.processInfo.systemUptime)
     }
 
-    /// Feeds one keyboard event into the burst window and reports whether
-    /// any of the three cat signatures (paw-landing, cat-sitting, violent
-    /// mash) is now present. Held-key state is maintained separately by
-    /// trackHeldKeys; autorepeat keyDowns contribute no new state but act
-    /// as the clock tick that lets the sustained-hold check fire while keys
-    /// sit pinned under a cat.
-    private func catDetected(type: CGEventType, event: CGEvent) -> Bool {
-        guard type == .keyDown else { return false }
+    /// Feeds one keyboard event into the burst window and asks LockLogic
+    /// whether any cat signature (paw-landing, cat-sitting, violent mash)
+    /// is now present, returning its description or nil. Held-key state is
+    /// maintained separately by trackHeldKeys; autorepeat keyDowns
+    /// contribute no new state but act as the clock tick that lets the
+    /// sustained-hold check fire while keys sit pinned under a cat.
+    private func catDetected(type: CGEventType, event: CGEvent) -> String? {
+        guard type == .keyDown else { return nil }
 
         let now = ProcessInfo.processInfo.systemUptime
         if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
             recentKeyDowns.append((time: now, keyCode: event.getIntegerValueField(.keyboardEventKeycode)))
         }
+        recentKeyDowns.removeAll { now - $0.time > LockLogic.burstWindow }
 
-        recentKeyDowns.removeAll { now - $0.time > Self.burstWindow }
-        heldKeys = heldKeys.filter { now - $0.value < Self.heldStaleLimit }
-
-        // 1. Paw-landing: several keys physically down right now.
-        if heldKeys.count >= Self.concurrentHeldThreshold { return true }
-
-        // 2. Cat-sitting: multiple keys pinned for a sustained stretch.
-        let sustained = heldKeys.values.filter { now - $0 >= Self.sustainedHeldDuration }
-        if sustained.count >= Self.sustainedHeldCount { return true }
-
-        // 3. Violent mash: rate + diversity beyond human typing.
-        if recentKeyDowns.count >= Self.burstKeyCount,
-           Set(recentKeyDowns.map(\.keyCode)).count >= Self.burstDistinctKeys {
-            return true
-        }
-
-        return false
+        return LockLogic.catTrigger(heldKeys: heldKeys, recentKeyDowns: recentKeyDowns, now: now)
     }
 
     private func matchesHotkey(event: CGEvent) -> Bool {

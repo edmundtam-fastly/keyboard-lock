@@ -8,6 +8,11 @@ let package = Package(
         .executableTarget(
             name: "KeyboardLock",
             path: "Sources/KeyboardLock"
+        ),
+        .testTarget(
+            name: "KeyboardLockTests",
+            dependencies: ["KeyboardLock"],
+            path: "Tests/KeyboardLockTests"
         )
     ]
 )

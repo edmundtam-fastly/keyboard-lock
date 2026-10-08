@@ -89,10 +89,17 @@ Locked — Unlock in menu dropdown", and the menu bar icon switches to a
 filled lock.
 
 If auto-lock ever false-triggers during normal typing (or misses your cat),
-the thresholds live at the top of
-`Sources/KeyboardLock/LockController.swift` (`concurrentHeldThreshold`,
-`sustainedHeldCount`/`sustainedHeldDuration`, and the `burst*` constants) —
-tune and rebuild.
+every auto-lock logs which rule fired (rule name and counts only, never key
+identities) — check it with:
+
+```sh
+/usr/bin/log show --last 1h --predicate 'eventMessage contains "KeyboardLock: auto-lock fired"'
+```
+
+The thresholds live in `Sources/KeyboardLock/LockLogic.swift`
+(`concurrentHeldThreshold`, `sustainedHeldCount`/`sustainedHeldDuration`,
+and the `burst*` constants) — tune, rebuild, and run `swift test` to check
+the change against the simulated typing/cat traces.
 
 ## Design note: why unlock is menu-only, not a typed code
 
