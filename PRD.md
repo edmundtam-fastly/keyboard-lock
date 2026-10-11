@@ -1,6 +1,6 @@
 # PRD: Cat-Proof Keyboard Lock
 
-**Status:** v1 shipped, v1.1 in progress **Platform:** macOS **Owner:** Edmund **Last updated:** 2026-07-23
+**Status:** v1.2 shipped **Platform:** macOS **Owner:** Edmund **Last updated:** 2026-10-10
 
 > Revision note: this PRD was updated after v1 shipped to reflect what was
 > actually built (see §5a for deltas from the original draft) and to spec the
@@ -42,7 +42,7 @@ As a cat parent, I want to lock my keyboard during Zoom meetings so my cat can't
 | 3 | Trackpad/mouse events are never intercepted — they stay fully live while locked |
 | 4 | Unlock via menu bar item ("Unlock Keyboard") restores keyboard function immediately |
 | 5 | Menu bar icon changes state (open/filled lock) to show current status |
-| 6 | Transparent on-screen banner while locked: "Keyboard Locked — Unlock in menu dropdown" (click-through, doesn't obscure content) |
+| 6 | Transparent on-screen banner while locked: "Keyboard Locked — Unlock in menu dropdown" (click-through, doesn't obscure content), shown on every connected display so a meeting on a secondary screen still surfaces the state |
 | 7 | App launches at login (optional setting, off by default) |
 | 8 | Hard restart of the machine always unlocks |
 | 9 | If the app crashes or is killed while locked, the OS tears the event tap down with the process — a stuck lock is impossible |
@@ -65,7 +65,8 @@ As a cat parent, I want to lock my keyboard during Zoom meetings so my cat can't
 | :---- | :---- |
 | 10 | User can enable "Auto-Lock on Key Burst" via a menu bar toggle; **off by default** (the original draft explicitly declined always-on auto-lock, so this is strictly opt-in) |
 | 11 | **Paw-landing trigger:** ≥4 non-modifier keys physically held down at the same moment locks immediately (human rollover typing overlaps 2–3 keys at most) |
-| 12 | **Cat-sitting trigger:** ≥2 keys held down concurrently for ≥1.5s locks (one held key is normal human behavior — arrows, backspace — two-plus is not) |
+| 12 | **Cat-sitting trigger:** keys pinned for ≥1.5s lock, in two tiers — ≥3 pinned keys regardless of when they landed, or exactly 2 pinned keys that landed within 120ms of each other. The co-arrival requirement distinguishes one physical event (a paw hitting both keys at once) from a deliberate human two-key hold such as W+A strafing in a game, which the original single-tier rule misread as feline |
+| 12a | Cat-sitting is evaluated on a 0.5s poll while auto-lock is armed and keys are held, not only when events arrive — otherwise keys pinned under a sleeping cat stay invisible on systems where key repeat is disabled |
 | 13 | **Mash backstop:** ≥8 keyDowns within 0.3s spanning ≥5 distinct keycodes (~320 WPM instantaneous, comfortably above the ~100 WPM false-trigger point observed with the old threshold) |
 | 14 | Auto-repeat from held keys never counts as new presses, but serves as the clock tick that lets the sitting trigger fire while keys sit pinned |
 | 15 | Modifier keys (⇧⌃⌥⌘/fn) never count toward held-key totals — holding Shift while arrow-selecting text cannot contribute to a trigger |
@@ -103,12 +104,14 @@ does not trigger.
 
 - Cat holds down keys (auto-repeat): suppressed while locked; while unlocked, repeats aren't counted as new presses but do drive the cat-sitting duration check
 - Fast human typing burst (validated to ~100 WPM real-world): must not false-trigger auto-lock — concurrency triggers require physically overlapping held keys that typing doesn't produce, and the rate backstop sits at ~320 WPM instantaneous
-- Human holding one key (backspace, arrows, gaming): a single held key never triggers; two-plus held keys for 1.5s does
+- Human holding one key (backspace, arrows, gaming): a single held key never triggers
+- Human deliberately holding two keys (W+A strafing in a game, held chords): does not trigger, because the two presses arrive as separate decisions hundreds of milliseconds apart rather than co-arriving within 120ms. Residual: holding ≥3 non-modifier keys for 1.5s+ still triggers (no common human analogue, but some flight sims and accessibility setups do it) — documented as a reason to toggle auto-lock off for those sessions
+- Secure input fields (login prompts, password managers): macOS withholds keyboard events from all event taps, so auto-lock cannot fire and the lock hotkey does not register while such a field has focus. The menu bar item still works, since pointer input is never intercepted
 - Key already down when the lock engages (common with auto-lock — the leaked pre-threshold keyDowns): its keyUp is allowed through once so the frontmost app doesn't perceive a stuck held key (macOS accent-picker popup, post-unlock input weirdness); a bare keyUp types nothing, so suppression isn't weakened
 - Modifier key held when the lock engages (⇧⌃⌥⌘ or Fn/Globe, which arrive as flagsChanged): same treatment. The physical modifier state is snapshotted from the HID system at lock time, and a flagsChanged event passes through only if it purely releases snapshotted modifiers — never if it presses a new one (a Globe press is itself the emoji-picker trigger). Prevents stuck-Fn ("e" opens the emoji picker after unlock) and the lock hotkey's own ⌃⌥⌘ poisoning the session. Exactly-once semantics; unit-tested in Tests/KeyboardLockTests. Caps Lock remains excluded (toggle, not hold)
 - Known residual: if a pending modifier's release happens while the cat holds a *different*, undelivered modifier, that release event is suppressed (it isn't a pure release); the state self-heals when the intruding modifier lifts, and worst case resolves on the next real press/release of that modifier after unlock
 - Auto-lock diagnostics: every auto-lock logs which rule fired with its counts (rule names and counts only — never key identities) to the unified log, so false positives can be traced via Console/log show
-- Phantom held keys (a keyUp the tap never saw, e.g. around secure-input fields): aged out after 10s so they can't inflate concurrency counts into false paw-landing triggers; real pinned keys are already caught by cat-sitting at 1.5s
+- Phantom held keys (a keyUp the tap never saw, e.g. around secure-input fields): aged out after 10s so they can't inflate concurrency counts into false paw-landing triggers; real pinned keys are already caught by cat-sitting at 1.5s. When the OS disables the tap (callback timeout or user action), held-key state is additionally re-probed against the HID system on re-enable rather than trusted or blanket-cleared
 - App killed/crashed while locked: event tap dies with the process, input restored automatically
 - System-reserved shortcuts (⌘Tab, Spotlight, Mission Control): intercepted by macOS above any third-party tap; cannot be blocked (documented limitation)
 - Caps Lock LED may be toggled by the hardware controller before the tap sees the event; no character leaks either way
@@ -132,3 +135,5 @@ does not trigger.
 4. ~~**Polish:** transparent banner, launch-at-login, fn-key coverage, crash-safety~~ ✅
 5. **Real-world test:** several actual Zoom meetings with the cat as QA — ongoing
 6. **v1.1 auto-lock:** first pass (rate-only) failed real-cat + fast-typing QA; revised to concurrency/hold-duration detection — in re-test
+7. **v1.1.2 stuck-modifier fix:** modifier releases held at lock time now drain (fixes stuck Fn → "e" opening the emoji picker, and the lock hotkey's own ⌃⌥⌘ poisoning the session)
+8. **v1.2 code-review follow-ups:** cat-sitting co-arrival tiering (deliberate two-key holds no longer misread as feline), idle poll so pinned keys are caught without key repeat, banner on all displays, HID re-probe after tap disable, modern `launchctl bootstrap`/`bootout`

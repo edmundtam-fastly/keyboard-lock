@@ -13,19 +13,30 @@ enum LockLogic {
     // of which locks:
     //
     // 1. Paw-landing: ≥4 non-modifier keys physically held down at once.
-    // 2. Cat-sitting: ≥2 keys held down concurrently for ≥1.5s. (One held
-    //    key is normal human behavior — arrows, backspace — two+ isn't.)
-    //    Evaluated when autorepeat events arrive, so a silent keyboard with
-    //    keys pinned still gets caught as soon as repeat kicks in.
+    // 2. Cat-sitting: keys pinned for ≥1.5s, in two tiers (see below).
     // 3. Violent mash: ≥8 keyDowns within 0.3s spanning ≥5 distinct keys
     //    (~320 WPM instantaneous — raised after real fast typing at
     //    80–100 WPM false-triggered a lower threshold).
     static let concurrentHeldThreshold = 4
-    static let sustainedHeldCount = 2
     static let sustainedHeldDuration: TimeInterval = 1.5
     static let burstWindow: TimeInterval = 0.3
     static let burstKeyCount = 8
     static let burstDistinctKeys = 5
+
+    // Cat-sitting tiers. Holding two keys for seconds is NOT automatically
+    // feline: W+A to strafe in a game is exactly that, deliberately, for
+    // minutes. What separates a cat is *co-arrival* — a paw or flank is one
+    // physical event, so its keys depress within milliseconds of each other,
+    // while a human adds the second key as a separate decision hundreds of
+    // milliseconds or seconds later.
+    //
+    //   • exactly 2 pinned keys  → also require they landed together
+    //   • 3+ pinned keys         → trigger regardless of arrival timing
+    //     (holding three non-modifier keys for 1.5s+ has no common human
+    //     analogue, and it covers a cat that settles progressively)
+    static let sustainedHeldCount = 2
+    static let sustainedHeldCountIgnoringArrival = 3
+    static let sustainedCoArrivalWindow: TimeInterval = 0.12
 
     // Safety valve: a keyUp we never saw (tap briefly disabled, secure
     // input fields swallowing events mid-pair) leaves a phantom "held" key
@@ -77,10 +88,20 @@ enum LockLogic {
             return "paw-landing: \(heldKeys.count) keys held concurrently"
         }
 
-        let sustainedAges = heldKeys.values.map { now - $0 }.filter { $0 >= sustainedHeldDuration }
-        if sustainedAges.count >= sustainedHeldCount {
-            let oldest = sustainedAges.max().map { String(format: "%.1fs", $0) } ?? "?"
-            return "cat-sitting: \(sustainedAges.count) keys held, oldest \(oldest)"
+        let pinnedTimes = heldKeys.values.filter { now - $0 >= sustainedHeldDuration }.sorted()
+        if let earliest = pinnedTimes.first, let latest = pinnedTimes.last {
+            let oldest = String(format: "%.1fs", now - earliest)
+            if pinnedTimes.count >= sustainedHeldCountIgnoringArrival {
+                return "cat-sitting: \(pinnedTimes.count) keys held, oldest \(oldest)"
+            }
+            // Exactly 2 pinned keys: only feline if they landed together.
+            // A deliberate human second press (strafing, chorded shortcuts)
+            // arrives far later than one paw hitting both at once.
+            let arrivalSpread = latest - earliest
+            if pinnedTimes.count >= sustainedHeldCount, arrivalSpread <= sustainedCoArrivalWindow {
+                let spread = String(format: "%.0fms", arrivalSpread * 1000)
+                return "cat-sitting: 2 keys landed together (\(spread) apart), held \(oldest)"
+            }
         }
 
         let distinct = Set(recentKeyDowns.map(\.keyCode)).count

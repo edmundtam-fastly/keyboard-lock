@@ -33,17 +33,28 @@ enum LaunchAtLogin {
             let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
             try FileManager.default.createDirectory(at: plistURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: plistURL, options: .atomic)
-            runLaunchctl(["load", plistURL.path])
+            // Clear any previous registration first: bootstrap fails if the
+            // service is already loaded (e.g. the plist changed paths after
+            // moving the app to /Applications).
+            runLaunchctl(["bootout", serviceTarget])
+            runLaunchctl(["bootstrap", domainTarget, plistURL.path])
         } catch {
             NSLog("KeyboardLock: failed to install launch agent: \(error)")
         }
     }
 
     private static func uninstall() {
-        runLaunchctl(["unload", plistURL.path])
+        runLaunchctl(["bootout", serviceTarget])
         try? FileManager.default.removeItem(at: plistURL)
     }
 
+    // launchctl's modern subcommands (bootstrap/bootout) address services by
+    // domain rather than by plist path alone; load/unload are deprecated.
+    private static var domainTarget: String { "gui/\(getuid())" }
+    private static var serviceTarget: String { "\(domainTarget)/\(label)" }
+
+    /// Runs launchctl, ignoring failures: bootout on a service that isn't
+    /// loaded exits non-zero, which is the expected case on a fresh install.
     private static func runLaunchctl(_ arguments: [String]) {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/launchctl")

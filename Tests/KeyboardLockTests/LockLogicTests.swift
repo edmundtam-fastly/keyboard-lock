@@ -131,9 +131,44 @@ final class CatTriggerTests: XCTestCase {
         XCTAssertNil(LockLogic.catTrigger(heldKeys: keys, recentKeyDowns: [], now: now))
     }
 
-    func testCatSittingFiresForTwoKeysPinned() {
+    // A paw is one physical event: both keys depress within milliseconds.
+    func testCatSittingFiresForTwoKeysThatLandedTogether() {
         let now: TimeInterval = 100
-        let keys = held([(1, 98.0), (2, 98.2)])  // held 2.0s and 1.8s
+        let keys = held([(1, 98.0), (2, 98.05)])  // 50ms apart, held ~2s
+        XCTAssertNotNil(LockLogic.catTrigger(heldKeys: keys, recentKeyDowns: [], now: now))
+    }
+
+    // Error state guarded against: a human deliberately holding two keys —
+    // W+A strafing in a game, a held chord — where the second press is a
+    // separate decision seconds later. Must not be read as a cat.
+    func testTwoKeysHeldButPressedSecondsApartDoNotFire() {
+        let now: TimeInterval = 100
+        let keys = held([(1, 90.0), (2, 95.0)])  // 5s apart, both long-held
+        XCTAssertNil(LockLogic.catTrigger(heldKeys: keys, recentKeyDowns: [], now: now),
+                     "deliberate two-key holds (strafing) must not auto-lock")
+    }
+
+    // Even a brisk deliberate second press (250ms later) is far slower than
+    // a paw landing, and must not trigger.
+    func testTwoKeysWithDeliberateSecondPressDoNotFire() {
+        let now: TimeInterval = 100
+        let keys = held([(1, 97.0), (2, 97.25)])
+        XCTAssertNil(LockLogic.catTrigger(heldKeys: keys, recentKeyDowns: [], now: now))
+    }
+
+    // Three pinned keys has no common human analogue, so arrival timing is
+    // not required — this covers a cat settling onto keys progressively.
+    func testThreePinnedKeysFireRegardlessOfArrivalSpread() {
+        let now: TimeInterval = 100
+        let keys = held([(1, 90.0), (2, 94.0), (3, 97.0)])
+        XCTAssertNotNil(LockLogic.catTrigger(heldKeys: keys, recentKeyDowns: [], now: now))
+    }
+
+    // The co-arrival window applies to the pinned keys only: a key pressed
+    // recently shouldn't drag two long-pinned keys out of eligibility.
+    func testRecentThirdKeyDoesNotSuppressCoArrivedPair() {
+        let now: TimeInterval = 100
+        let keys = held([(1, 98.0), (2, 98.05), (3, 99.95)])  // third just landed
         XCTAssertNotNil(LockLogic.catTrigger(heldKeys: keys, recentKeyDowns: [], now: now))
     }
 
@@ -272,15 +307,36 @@ final class TypingTraceTests: XCTestCase {
         XCTAssertNotNil(runTrace(events), "a five-key paw landing must auto-lock")
     }
 
-    // A cat settling: two keys pinned while the keyboard otherwise idles;
-    // detection fires on the next evaluation tick (autorepeat in real use —
-    // modeled here as a later keyDown of a third key).
+    // A cat settling: two keys pinned together while the keyboard otherwise
+    // idles; detection fires on the next evaluation tick (autorepeat or the
+    // idle poll in real use — modeled here as a later keyDown).
     func testSimulatedCatSittingTriggers() {
         let events = [
             SimEvent(time: 10.0, keyCode: 1, isDown: true),
-            SimEvent(time: 10.1, keyCode: 2, isDown: true),
+            SimEvent(time: 10.05, keyCode: 2, isDown: true),
             SimEvent(time: 12.0, keyCode: 3, isDown: true),  // evaluation tick
         ]
-        XCTAssertNotNil(runTrace(events), "two keys pinned for 1.9s must auto-lock")
+        XCTAssertNotNil(runTrace(events), "two co-arrived keys pinned 1.9s must auto-lock")
+    }
+
+    // Gaming session: W held continuously while A/D are held in long
+    // deliberate bursts, plus occasional taps. Nothing here is a cat.
+    func testSimulatedGamingSessionDoesNotTrigger() {
+        var events: [SimEvent] = []
+        let wDown = 10.0
+        events.append(SimEvent(time: wDown, keyCode: 13, isDown: true))      // W held
+        events.append(SimEvent(time: wDown + 30.0, keyCode: 13, isDown: false))
+        // Strafe left, then right, each a multi-second hold added well after W.
+        events.append(SimEvent(time: 12.0, keyCode: 0, isDown: true))        // A
+        events.append(SimEvent(time: 16.0, keyCode: 0, isDown: false))
+        events.append(SimEvent(time: 18.5, keyCode: 2, isDown: true))        // D
+        events.append(SimEvent(time: 23.0, keyCode: 2, isDown: false))
+        // Ability taps sprinkled in.
+        for i in 0..<8 {
+            let down = 13.0 + Double(i) * 1.7
+            events.append(SimEvent(time: down, keyCode: Int64(18 + i % 4), isDown: true))
+            events.append(SimEvent(time: down + 0.09, keyCode: Int64(18 + i % 4), isDown: false))
+        }
+        XCTAssertNil(runTrace(events), "deliberate held keys while gaming must not auto-lock")
     }
 }

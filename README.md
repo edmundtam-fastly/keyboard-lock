@@ -74,7 +74,11 @@ After granting, quit and relaunch the app once.
   the keyboard automatically, for the times the cat gets there before you
   do. Three signatures trigger it, any one alone:
   - **Paw landing** — 4+ keys physically held down at the same moment
-  - **Cat sitting** — 2+ keys held down together for 1.5s or more
+  - **Cat sitting** — 3+ keys held together for 1.5s or more, or exactly 2
+    keys that landed within 120ms of each other and stayed down. (The
+    co-arrival requirement is what separates a paw — one physical event
+    hitting both keys at once — from you deliberately holding two keys,
+    like W+A to strafe in a game.)
   - **Violent mash** — 8+ keystrokes within 0.3s across 5+ distinct keys
     (~320 WPM; normal fast typing tops out far below this)
 
@@ -97,33 +101,49 @@ identities) — check it with:
 ```
 
 The thresholds live in `Sources/KeyboardLock/LockLogic.swift`
-(`concurrentHeldThreshold`, `sustainedHeldCount`/`sustainedHeldDuration`,
-and the `burst*` constants) — tune, rebuild, and run `swift test` to check
-the change against the simulated typing/cat traces.
+(`concurrentHeldThreshold`, the `sustained*` constants, and the `burst*`
+constants) — tune, rebuild, and run `swift test` to check the change against
+the simulated typing/gaming/cat traces.
 
 ## Design note: why unlock is menu-only, not a typed code
 
-The original PRD called for an unlock code typed while locked (FR3–FR5,
-FR8), checked against a rolling keystroke buffer. In testing that path was
+The original draft of the PRD called for an unlock code typed while locked,
+checked against a rolling keystroke buffer. In testing that path was
 unreliable — locking worked, but the typed code wasn't reliably recognized,
 requiring a force-quit to regain keyboard control. Rather than debug the
 `CGEventTap` keycode-to-character translation further, the interaction was
 simplified: the keyboard is fully suppressed while locked (no exceptions,
 no code to remember or mistype), and unlocking happens with a mouse/trackpad
 click on the menu bar item instead. This also sidesteps an internal
-inconsistency in the original PRD, which asked for trackpad events to be
-suppressed too (FR2) while also relying on mouse clicks for a forgot-the-code
-fallback (Edge Cases) — those can't both hold under one `CGEventTap`, since
-it can't distinguish a cat's paw from an intentional click.
+inconsistency in that draft, which asked for trackpad events to be
+suppressed too while also relying on mouse clicks for a forgot-the-code
+fallback — those can't both hold under one `CGEventTap`, since it can't
+distinguish a cat's paw from an intentional click.
 
 If you forget to unlock or the menu becomes unreachable for some reason, the
-same fallbacks as before still apply: a hard reset (FR10) always works, and
-if the app crashes the OS tears down the event tap with the process, so
-normal keyboard input returns automatically with no watchdog needed.
+same fallbacks still apply: a hard reset always works, and if the app
+crashes the OS tears down the event tap with the process, so normal keyboard
+input returns automatically with no watchdog needed.
 
-## Known limitations / v1 scope (per PRD non-goals)
+See [PRD.md](PRD.md) for the full requirement list and revision history.
 
+## Known limitations
+
+- **Password fields block everything.** While a secure input field has focus
+  (login prompts, password managers), macOS hides keyboard events from all
+  event taps — so auto-lock can't fire and `⌃⌥⌘L` won't register. The menu
+  bar item still works, since the mouse is never intercepted.
+- **Deliberate key-holding can still look feline.** Holding three or more
+  non-modifier keys for 1.5s+ triggers the cat-sitting rule even when it's
+  you doing it (some flight sims, accessibility setups). Two-key holds like
+  W+A strafing are explicitly handled — they only trigger if both keys land
+  within 120ms of each other, which deliberate presses don't. If a workflow
+  of yours does trip it, turn auto-lock off from the menu while you're in it.
+- **System-reserved shortcuts can't be blocked.** ⌘Tab, Spotlight, Mission
+  Control and friends are intercepted by macOS above any third-party event
+  tap. No app, including this one, can suppress them.
+- **Caps Lock is a toggle, not a hold** — it's excluded from modifier
+  tracking, so a cat toggling it may leave the light on. Tap it to clear.
 - Zoom-specific shortcuts (mute/camera) aren't available while locked — use
   Zoom's on-screen controls with the mouse, or unlock first.
-- No idle auto-lock; you must trigger the lock yourself.
 - macOS only, single user, no cloud config.

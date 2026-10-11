@@ -48,10 +48,15 @@ final class LockController {
     // a stuck Fn turns "e" into the emoji picker after unlocking.
     private var pendingReleaseFlags: CGEventFlags = []
 
+    // Drives the time-based cat-sitting check when no events are arriving.
+    private static let idleSittingPollInterval: TimeInterval = 0.5
+    private var idleSittingTimer: Timer?
+
     private init() {}
 
     func reloadConfig() {
         config = ConfigStore.load()
+        updateIdleSittingTimer()
     }
 
     @discardableResult
@@ -63,8 +68,12 @@ final class LockController {
         // delivers them as "system defined" events (NX_SYSDEFINED, raw type
         // 14). There's no public CGEventType case for it, but it's a stable,
         // widely-used raw value (the same trick Karabiner/Hammerspoon use).
-        let systemDefinedType = CGEventType(rawValue: 14)!
-        let eventTypes: [CGEventType] = [.keyDown, .keyUp, .flagsChanged, systemDefinedType]
+        var eventTypes: [CGEventType] = [.keyDown, .keyUp, .flagsChanged]
+        if let systemDefinedType = CGEventType(rawValue: 14) {
+            eventTypes.append(systemDefinedType)
+        } else {
+            NSLog("KeyboardLock: system-defined event type unavailable; media/function-row keys will not be suppressed")
+        }
         var mask: CGEventMask = 0
         for eventType in eventTypes {
             let bit: CGEventMask = 1 << eventType.rawValue
@@ -138,6 +147,54 @@ final class LockController {
     private func resetDetector() {
         recentKeyDowns.removeAll()
         heldKeys.removeAll()
+        updateIdleSittingTimer()
+    }
+
+    /// Drops held-key entries whose keys aren't actually depressed any more,
+    /// asking the HID system rather than guessing. Used after the tap was
+    /// disabled, when keyUps may have been missed entirely.
+    private func reconcileHeldKeysWithHardware() {
+        heldKeys = heldKeys.filter { entry in
+            guard let code = CGKeyCode(exactly: entry.key) else { return false }
+            return CGEventSource.keyState(.hidSystemState, key: code)
+        }
+        updateIdleSittingTimer()
+    }
+
+    /// The cat-sitting rule is time-based, but events are the only thing
+    /// that normally drives evaluation — so two keys pinned under a sleeping
+    /// cat are invisible until some other key is pressed. Autorepeat usually
+    /// provides that tick, but a user who has turned key repeat off in
+    /// System Settings would never get one. This low-frequency poll runs
+    /// only while auto-lock is armed and keys are actually held, so it costs
+    /// nothing in the common idle case.
+    private func updateIdleSittingTimer() {
+        let needed = config.autoLockOnBurst && !isLocked && !heldKeys.isEmpty
+        if needed, idleSittingTimer == nil {
+            let timer = Timer(timeInterval: Self.idleSittingPollInterval, repeats: true) { [weak self] _ in
+                self?.evaluateHeldKeysWhileIdle()
+            }
+            // .common so an open menu bar menu doesn't starve the timer.
+            RunLoop.main.add(timer, forMode: .common)
+            idleSittingTimer = timer
+        } else if !needed, let timer = idleSittingTimer {
+            timer.invalidate()
+            idleSittingTimer = nil
+        }
+    }
+
+    private func evaluateHeldKeysWhileIdle() {
+        let now = ProcessInfo.processInfo.systemUptime
+        heldKeys = LockLogic.pruneHeldKeys(heldKeys, now: now)
+        recentKeyDowns.removeAll { now - $0.time > LockLogic.burstWindow }
+
+        if config.autoLockOnBurst, !isLocked,
+           let trigger = LockLogic.catTrigger(heldKeys: heldKeys, recentKeyDowns: recentKeyDowns, now: now) {
+            NSLog("KeyboardLock: auto-lock fired (idle poll) — %@", trigger)
+            lock()
+            return
+        }
+        updateIdleSittingTimer()
     }
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -149,6 +206,13 @@ final class LockController {
             if let tap = eventTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
+            // Events went missing while the tap was deaf, so the detector's
+            // view of the keyboard is stale: any keyUp we failed to see left
+            // a phantom held key that could fake a paw-landing. Rather than
+            // blanket-reset (which would lose genuinely-held keys), re-probe
+            // the hardware for the truth.
+            reconcileHeldKeysWithHardware()
+            recentKeyDowns.removeAll()
             return Unmanaged.passUnretained(event)
         }
 
@@ -216,6 +280,7 @@ final class LockController {
         // auto-lock detector runs — they'd otherwise inflate concurrency
         // counts and pollute the pendingReleaseKeys snapshot at lock time.
         heldKeys = LockLogic.pruneHeldKeys(heldKeys, now: ProcessInfo.processInfo.systemUptime)
+        updateIdleSittingTimer()
     }
 
     /// Feeds one keyboard event into the burst window and asks LockLogic
