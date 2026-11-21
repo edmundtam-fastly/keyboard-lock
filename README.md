@@ -150,7 +150,9 @@ same fallbacks still apply: a hard reset always works, and if the app
 crashes the OS tears down the event tap with the process, so normal keyboard
 input returns automatically with no watchdog needed.
 
-See [PRD.md](PRD.md) for the full requirement list and revision history.
+See [PRD.md](PRD.md) for the full requirement list and revision history, and
+[DECISIONS.md](DECISIONS.md) for the engineering rationale behind the
+current design (plus how to set the project up on a new machine).
 
 ## Known limitations
 
