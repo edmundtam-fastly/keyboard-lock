@@ -169,7 +169,9 @@ final class LockController {
     /// only while auto-lock is armed and keys are actually held, so it costs
     /// nothing in the common idle case.
     private func updateIdleSittingTimer() {
-        let needed = config.autoLockOnBurst && !isLocked && !heldKeys.isEmpty
+        // Also runs for calibration alone, so a recorded session captures
+        // long holds even with auto-lock switched off.
+        let needed = (config.autoLockOnBurst || config.calibrationLogging) && !isLocked && !heldKeys.isEmpty
         if needed, idleSittingTimer == nil {
             let timer = Timer(timeInterval: Self.idleSittingPollInterval, repeats: true) { [weak self] _ in
                 self?.evaluateHeldKeysWhileIdle()
@@ -188,8 +190,7 @@ final class LockController {
         heldKeys = LockLogic.pruneHeldKeys(heldKeys, now: now)
         recentKeyDowns.removeAll { now - $0.time > LockLogic.burstWindow }
 
-        if config.autoLockOnBurst, !isLocked,
-           let trigger = LockLogic.catTrigger(heldKeys: heldKeys, recentKeyDowns: recentKeyDowns, now: now) {
+        if let trigger = evaluate(kind: "poll", now: now), config.autoLockOnBurst, !isLocked {
             NSLog("KeyboardLock: auto-lock fired (idle poll) — %@", trigger)
             lock()
             return
@@ -225,7 +226,7 @@ final class LockController {
             // any lock (manual hotkey/menu included) needs to know which
             // keys are physically down so their releases can pass through.
             trackHeldKeys(type: type, event: event)
-            if config.autoLockOnBurst, let trigger = catDetected(type: type, event: event) {
+            if let trigger = evaluateDetector(type: type, event: event), config.autoLockOnBurst {
                 // Rule name + counts only — never key identities — so false
                 // positives can be diagnosed from Console/log show.
                 NSLog("KeyboardLock: auto-lock fired — %@", trigger)
@@ -283,23 +284,84 @@ final class LockController {
         updateIdleSittingTimer()
     }
 
-    /// Feeds one keyboard event into the burst window and asks LockLogic
-    /// whether any cat signature (paw-landing, cat-sitting, violent mash)
-    /// is now present, returning its description or nil. Held-key state is
-    /// maintained separately by trackHeldKeys; autorepeat keyDowns
-    /// contribute no new state but act as the clock tick that lets the
-    /// sustained-hold check fire while keys sit pinned under a cat.
-    private func catDetected(type: CGEventType, event: CGEvent) -> String? {
-        guard type == .keyDown else { return nil }
+    /// Feeds one keyboard event into the burst window, records a calibration
+    /// sample if logging is on, and asks LockLogic whether any cat signature
+    /// is now present. Held-key state is maintained separately by
+    /// trackHeldKeys; autorepeat keyDowns contribute no new state but act as
+    /// the clock tick that lets the sustained-hold check fire while keys sit
+    /// pinned under a cat.
+    ///
+    /// Runs even when auto-lock is off, so calibration can measure real
+    /// typing without the lock interrupting the session; the caller decides
+    /// whether a trigger actually locks.
+    private func evaluateDetector(type: CGEventType, event: CGEvent) -> String? {
+        guard type == .keyDown || type == .keyUp else { return nil }
 
         let now = ProcessInfo.processInfo.systemUptime
-        if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+        if type == .keyDown, event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
             recentKeyDowns.append((time: now, keyCode: event.getIntegerValueField(.keyboardEventKeycode)))
         }
         recentKeyDowns.removeAll { now - $0.time > LockLogic.burstWindow }
 
-        return LockLogic.catTrigger(heldKeys: heldKeys, recentKeyDowns: recentKeyDowns, now: now)
+        return evaluate(kind: type == .keyDown ? "down" : "up", now: now)
     }
+
+    /// Shared tail of every evaluation: measure, confirm against hardware
+    /// before believing a concurrency claim, log, and report the trigger.
+    private func evaluate(kind: String, now: TimeInterval) -> String? {
+        var measurements = LockLogic.measure(heldKeys: heldKeys, recentKeyDowns: recentKeyDowns, now: now)
+        var trigger = LockLogic.catTrigger(measurements)
+
+        // Two of the three rules rest entirely on "this many keys are down
+        // right now" — a claim built from keyDown/keyUp pairs we might have
+        // missed (secure input fields, app switches). Before acting on it,
+        // ask the hardware whether those keys are really down, then redo the
+        // measurement. Only runs when something is about to fire, so the
+        // common path stays free of HID probes.
+        if trigger != nil {
+            let beforeCount = heldKeys.count
+            reconcileHeldKeysWithHardware()
+            if heldKeys.count != beforeCount {
+                measurements = LockLogic.measure(heldKeys: heldKeys, recentKeyDowns: recentKeyDowns, now: now)
+                let confirmed = LockLogic.catTrigger(measurements)
+                if confirmed == nil {
+                    NSLog("KeyboardLock: discarded a would-be auto-lock — %d of %d held keys were stale",
+                          beforeCount - heldKeys.count, beforeCount)
+                }
+                trigger = confirmed
+            }
+        }
+
+        if config.calibrationLogging {
+            CalibrationLog.record(.init(
+                time: CalibrationLog.elapsed(),
+                kind: kind,
+                heldCount: measurements.heldCount,
+                heldSpread: measurements.heldSpread,
+                maxHold: measurements.maxHold,
+                pinnedCount: measurements.pinnedCount,
+                pinnedSpread: measurements.pinnedSpread,
+                windowDowns: measurements.windowDowns,
+                windowDistinct: measurements.windowDistinct,
+                trigger: trigger ?? ""
+            ))
+        }
+        return trigger
+    }
+
+    /// Writes a labelled marker so a recorded session can be split into
+    /// "this stretch was the cat" and everything else.
+    func markCatEvent() {
+        guard config.calibrationLogging else { return }
+        CalibrationLog.record(.init(
+            time: CalibrationLog.elapsed(), kind: "mark-cat",
+            heldCount: 0, heldSpread: 0, maxHold: 0, pinnedCount: 0,
+            pinnedSpread: 0, windowDowns: 0, windowDistinct: 0, trigger: ""
+        ))
+    }
+
+    func startCalibrationLogging() { CalibrationLog.begin() }
+    func stopCalibrationLogging() { CalibrationLog.end() }
 
     private func matchesHotkey(event: CGEvent) -> Bool {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)

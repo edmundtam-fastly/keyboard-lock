@@ -3,12 +3,14 @@ import Foundation
 struct AppConfig: Codable {
     var launchAtLogin: Bool
     var autoLockOnBurst: Bool
+    var calibrationLogging: Bool
 
-    static let `default` = AppConfig(launchAtLogin: false, autoLockOnBurst: false)
+    static let `default` = AppConfig(launchAtLogin: false, autoLockOnBurst: false, calibrationLogging: false)
 
-    init(launchAtLogin: Bool, autoLockOnBurst: Bool) {
+    init(launchAtLogin: Bool, autoLockOnBurst: Bool, calibrationLogging: Bool = false) {
         self.launchAtLogin = launchAtLogin
         self.autoLockOnBurst = autoLockOnBurst
+        self.calibrationLogging = calibrationLogging
     }
 
     // Tolerate configs written by older versions that lack newer keys —
@@ -19,6 +21,7 @@ struct AppConfig: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
         autoLockOnBurst = try container.decodeIfPresent(Bool.self, forKey: .autoLockOnBurst) ?? false
+        calibrationLogging = try container.decodeIfPresent(Bool.self, forKey: .calibrationLogging) ?? false
     }
 }
 

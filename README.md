@@ -105,6 +105,31 @@ The thresholds live in `Sources/KeyboardLock/LockLogic.swift`
 constants) — tune, rebuild, and run `swift test` to check the change against
 the simulated typing/gaming/cat traces.
 
+### Calibration recording
+
+Rather than guessing at thresholds, you can measure your own typing:
+
+1. Menu bar icon → **Record Calibration Data**.
+2. Work normally for 10–20 minutes. Turning *off* auto-lock first gives an
+   uninterrupted session; the recorder still notes every point where a rule
+   *would* have fired.
+3. If the cat strikes, click **Mark Cat Event** within ~30s to label it.
+4. Turn recording off, then analyze:
+
+```sh
+./Scripts/analyze_calibration.py
+```
+
+The report shows how close your typing came to each rule (max, p99.9,
+median) and recommends which constant to move and to what.
+
+**What gets recorded:** only timing and counts — keys held at once, how long
+they were held, how far apart they arrived, how many keydowns and how many
+*distinct* keys fell inside the burst window. Key codes and characters are
+never written to disk, so the log cannot reveal anything you typed. It lives
+at `~/Library/Application Support/KeyboardLock/calibration.csv` and never
+leaves the machine.
+
 ## Design note: why unlock is menu-only, not a typed code
 
 The original draft of the PRD called for an unlock code typed while locked,

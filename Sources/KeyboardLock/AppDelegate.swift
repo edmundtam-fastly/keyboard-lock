@@ -16,6 +16,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !controller.start() {
             showPermissionAlert()
         }
+
+        // Resume recording across restarts if the setting was left on.
+        if ConfigStore.load().calibrationLogging {
+            controller.startCalibrationLogging()
+        }
     }
 
     private func setupStatusItem() {
@@ -42,6 +47,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         launchItem.target = self
         launchItem.state = ConfigStore.load().launchAtLogin ? .on : .off
         menu.addItem(launchItem)
+
+        menu.addItem(.separator())
+
+        let calibrationItem = NSMenuItem(title: "Record Calibration Data", action: #selector(toggleCalibration), keyEquivalent: "")
+        calibrationItem.target = self
+        calibrationItem.state = ConfigStore.load().calibrationLogging ? .on : .off
+        calibrationItem.tag = 300
+        calibrationItem.toolTip = "Records only timing and key counts — never which keys you press."
+        menu.addItem(calibrationItem)
+
+        let markItem = NSMenuItem(title: "Mark Cat Event", action: #selector(markCatEvent), keyEquivalent: "")
+        markItem.target = self
+        markItem.tag = 310
+        markItem.isHidden = !ConfigStore.load().calibrationLogging
+        menu.addItem(markItem)
+
+        let revealItem = NSMenuItem(title: "Show Calibration File", action: #selector(revealCalibrationFile), keyEquivalent: "")
+        revealItem.target = self
+        revealItem.tag = 320
+        revealItem.isHidden = !ConfigStore.load().calibrationLogging
+        menu.addItem(revealItem)
 
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "Quit Keyboard Lock", action: #selector(quit), keyEquivalent: "q")
@@ -83,7 +109,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LaunchAtLogin.setEnabled(config.launchAtLogin)
     }
 
+    @objc private func toggleCalibration(_ sender: NSMenuItem) {
+        var config = ConfigStore.load()
+        config.calibrationLogging.toggle()
+        ConfigStore.save(config)
+        sender.state = config.calibrationLogging ? .on : .off
+        controller.reloadConfig()
+
+        if config.calibrationLogging {
+            controller.startCalibrationLogging()
+        } else {
+            controller.stopCalibrationLogging()
+        }
+        for tag in [310, 320] {
+            statusItem.menu?.items.first { $0.tag == tag }?.isHidden = !config.calibrationLogging
+        }
+    }
+
+    @objc private func markCatEvent() {
+        controller.markCatEvent()
+    }
+
+    @objc private func revealCalibrationFile() {
+        NSWorkspace.shared.activateFileViewerSelecting([CalibrationLog.fileURL])
+    }
+
     @objc private func quit() {
+        controller.stopCalibrationLogging()
         NSApp.terminate(nil)
     }
 

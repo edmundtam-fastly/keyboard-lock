@@ -75,6 +75,45 @@ enum LockLogic {
         heldKeys.filter { now - $0.value < heldStaleLimit }
     }
 
+    /// Everything the rules consider, reduced to numbers. Note what is
+    /// absent: key identity. Only *how many* distinct keys appear, never
+    /// which — which is why the calibration log can record these verbatim
+    /// without capturing anything that was typed.
+    struct Measurements {
+        var heldCount: Int = 0
+        var heldSpread: TimeInterval = 0     // arrival spread, all held keys
+        var maxHold: TimeInterval = 0        // longest current hold
+        var pinnedCount: Int = 0             // held past sustainedHeldDuration
+        var pinnedSpread: TimeInterval = 0   // arrival spread, pinned keys
+        var windowDowns: Int = 0
+        var windowDistinct: Int = 0
+    }
+
+    static func measure(
+        heldKeys: [Int64: TimeInterval],
+        recentKeyDowns: [(time: TimeInterval, keyCode: Int64)],
+        now: TimeInterval
+    ) -> Measurements {
+        var m = Measurements()
+        m.heldCount = heldKeys.count
+
+        let pressTimes = heldKeys.values.sorted()
+        if let earliest = pressTimes.first, let latest = pressTimes.last {
+            m.heldSpread = latest - earliest
+            m.maxHold = now - earliest
+        }
+
+        let pinned = pressTimes.filter { now - $0 >= sustainedHeldDuration }
+        m.pinnedCount = pinned.count
+        if let first = pinned.first, let last = pinned.last {
+            m.pinnedSpread = last - first
+        }
+
+        m.windowDowns = recentKeyDowns.count
+        m.windowDistinct = Set(recentKeyDowns.map(\.keyCode)).count
+        return m
+    }
+
     /// Evaluates the three cat signatures against current detector state.
     /// Returns a human-readable trigger description (used for the unified-
     /// log diagnostic, so false positives can be traced to a specific rule
@@ -84,29 +123,30 @@ enum LockLogic {
         recentKeyDowns: [(time: TimeInterval, keyCode: Int64)],
         now: TimeInterval
     ) -> String? {
-        if heldKeys.count >= concurrentHeldThreshold {
-            return "paw-landing: \(heldKeys.count) keys held concurrently"
+        catTrigger(measure(heldKeys: heldKeys, recentKeyDowns: recentKeyDowns, now: now))
+    }
+
+    static func catTrigger(_ m: Measurements) -> String? {
+        if m.heldCount >= concurrentHeldThreshold {
+            return "paw-landing: \(m.heldCount) keys held concurrently"
         }
 
-        let pinnedTimes = heldKeys.values.filter { now - $0 >= sustainedHeldDuration }.sorted()
-        if let earliest = pinnedTimes.first, let latest = pinnedTimes.last {
-            let oldest = String(format: "%.1fs", now - earliest)
-            if pinnedTimes.count >= sustainedHeldCountIgnoringArrival {
-                return "cat-sitting: \(pinnedTimes.count) keys held, oldest \(oldest)"
+        if m.pinnedCount > 0 {
+            let oldest = String(format: "%.1fs", m.maxHold)
+            if m.pinnedCount >= sustainedHeldCountIgnoringArrival {
+                return "cat-sitting: \(m.pinnedCount) keys held, oldest \(oldest)"
             }
             // Exactly 2 pinned keys: only feline if they landed together.
             // A deliberate human second press (strafing, chorded shortcuts)
             // arrives far later than one paw hitting both at once.
-            let arrivalSpread = latest - earliest
-            if pinnedTimes.count >= sustainedHeldCount, arrivalSpread <= sustainedCoArrivalWindow {
-                let spread = String(format: "%.0fms", arrivalSpread * 1000)
+            if m.pinnedCount >= sustainedHeldCount, m.pinnedSpread <= sustainedCoArrivalWindow {
+                let spread = String(format: "%.0fms", m.pinnedSpread * 1000)
                 return "cat-sitting: 2 keys landed together (\(spread) apart), held \(oldest)"
             }
         }
 
-        let distinct = Set(recentKeyDowns.map(\.keyCode)).count
-        if recentKeyDowns.count >= burstKeyCount, distinct >= burstDistinctKeys {
-            return "violent-mash: \(recentKeyDowns.count) keyDowns (\(distinct) distinct) in \(burstWindow)s"
+        if m.windowDowns >= burstKeyCount, m.windowDistinct >= burstDistinctKeys {
+            return "violent-mash: \(m.windowDowns) keyDowns (\(m.windowDistinct) distinct) in \(burstWindow)s"
         }
 
         return nil
